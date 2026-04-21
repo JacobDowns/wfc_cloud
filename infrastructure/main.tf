@@ -83,3 +83,10 @@ resource "google_pubsub_subscription" "wfc_push_sub" {
     }
   }
 }
+
+# Public inputs bucket
+resource "google_storage_bucket_iam_member" "public_read_inputs" {
+  bucket = google_storage_bucket.wfc_inputs.name
+  role   = "roles/storage.objectViewer"
+  member = "allUsers"
+}
