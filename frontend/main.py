@@ -4,8 +4,11 @@ import json
 import datetime
 from flask import Flask, render_template, request, jsonify
 from google.cloud import storage, pubsub_v1, firestore
+from google.cloud.exceptions import NotFound
 from PIL import Image
 import io
+
+TERMINAL_STATUSES = {"COMPLETE", "ERROR", "TIMED OUT", "CANCELLED"}
 
 app = Flask(__name__)
 
@@ -58,6 +61,7 @@ def upload_image():
         "output_size": output_size,
         "input_url": input_url,
         "output_url": None,
+        "progress": 0.0,
         "timestamp": firestore.SERVER_TIMESTAMP
     })
 
@@ -81,7 +85,7 @@ def get_jobs():
     docs = firestore_client.collection("wfc_jobs").order_by(
         "timestamp", direction=firestore.Query.DESCENDING
     ).limit(12).stream()
-    
+
     jobs = []
     for d in docs:
         data = d.to_dict()
@@ -90,8 +94,55 @@ def get_jobs():
         if 'timestamp' in data and data['timestamp']:
             data['timestamp'] = data['timestamp'].strftime("%H:%M:%S")
         jobs.append(data)
-        
+
     return jsonify(jobs)
+
+
+@app.route('/cancel/<job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Mark a PENDING job as CANCELLED. The worker checks this flag before
+    starting work and will ack-and-skip if cancelled. Only takes effect if the
+    worker has not yet picked up the message; in-flight cancellation will arrive
+    in a later change."""
+    doc_ref = firestore_client.collection("wfc_jobs").document(job_id)
+    snapshot = doc_ref.get()
+    if not snapshot.exists:
+        return jsonify({"error": "Job not found"}), 404
+
+    current_status = snapshot.get('status')
+    if current_status != 'PENDING':
+        return jsonify({"error": f"Cannot cancel a job in status {current_status}"}), 409
+
+    doc_ref.update({"status": "CANCELLED"})
+    return jsonify({"success": True})
+
+
+@app.route('/jobs/<job_id>', methods=['DELETE'])
+def delete_job(job_id):
+    """Delete a terminal-state job: removes the Firestore doc plus its input
+    and output blobs in GCS. Refuses to delete a job that's still pending or
+    running (the user should cancel first)."""
+    doc_ref = firestore_client.collection("wfc_jobs").document(job_id)
+    snapshot = doc_ref.get()
+    if not snapshot.exists:
+        return jsonify({"error": "Job not found"}), 404
+
+    current_status = snapshot.get('status')
+    if current_status not in TERMINAL_STATUSES:
+        return jsonify({"error": f"Cannot delete a job in status {current_status}; cancel it first"}), 409
+
+    # Best-effort GCS cleanup. Object names follow the upload/worker conventions.
+    for bucket_name, blob_name in (
+        (INPUT_BUCKET, f"{job_id}.png"),
+        (OUTPUT_BUCKET, f"generated-{job_id}.png"),
+    ):
+        try:
+            storage_client.bucket(bucket_name).blob(blob_name).delete()
+        except NotFound:
+            pass  # already gone — not a problem
+
+    doc_ref.delete()
+    return jsonify({"success": True})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))

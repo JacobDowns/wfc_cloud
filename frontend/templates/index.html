@@ -247,7 +247,59 @@
         .badge.pending    { background: #fef3c7; color: #92400e; }
         .badge.complete   { background: #d1fae5; color: #065f46; }
         .badge.error      { background: #fee2e2; color: #991b1b; }
-        .badge.timed-out  { background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
+        .badge.timed-out  { background: #ffedd5; color: #9a3412; border: 1px solid #fb923c; }
+        .badge.cancelled  { background: #e5e7eb; color: #374151; }
+
+        .card-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .icon-btn {
+            background: transparent;
+            color: var(--muted);
+            border: 1px solid transparent;
+            padding: 2px 8px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-radius: 999px;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .icon-btn:hover  { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
+        .icon-btn:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+
+        .progress {
+            margin: 10px 0 4px;
+        }
+
+        .progress-bar {
+            background: var(--border);
+            border-radius: 4px;
+            height: 6px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            background: var(--accent);
+            height: 100%;
+            width: 0%;
+            transition: width 0.4s ease;
+        }
+
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 4px;
+        }
 
         .empty-state {
             text-align: center;
@@ -346,6 +398,8 @@
                 </div>`;
         }
 
+        const TERMINAL = new Set(['COMPLETE', 'ERROR', 'TIMED OUT', 'CANCELLED']);
+
         function renderJobs(jobs) {
             if (!jobs.length) return renderEmpty();
 
@@ -354,19 +408,43 @@
                 const badge = `<span class="badge ${safeClass}">${job.status}</span>`;
                 const outputContent = job.status === 'COMPLETE'
                     ? `<a href="${job.output_url}" target="_blank" rel="noopener"><img src="${job.output_url}" alt="Generated"></a>`
-                    : `<small>generating&hellip;</small>`;
+                    : job.status === 'CANCELLED'
+                        ? `<small>cancelled</small>`
+                        : `<small>generating&hellip;</small>`;
                 const ts = job.timestamp || '';
+
+                let actionBtn = '';
+                if (job.status === 'PENDING') {
+                    actionBtn = `<button class="icon-btn" data-action="cancel" data-id="${job.id}" title="Cancel this pending job">Cancel</button>`;
+                } else if (TERMINAL.has(job.status)) {
+                    actionBtn = `<button class="icon-btn" data-action="delete" data-id="${job.id}" title="Delete this job">Delete</button>`;
+                }
+
+                let progressHtml = '';
+                if (job.status === 'PENDING' && typeof job.progress === 'number') {
+                    const pct = Math.max(0, Math.min(100, Math.round(job.progress * 100)));
+                    const label = pct === 0 ? 'waiting for worker' : 'solving';
+                    progressHtml = `
+                        <div class="progress">
+                            <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+                            <div class="progress-label"><span>${label}</span><span>${pct}%</span></div>
+                        </div>`;
+                }
 
                 return `
                     <div class="card">
                         <div class="card-header">
                             <span class="card-id">${job.id}</span>
-                            ${badge}
+                            <div class="card-actions">
+                                ${badge}
+                                ${actionBtn}
+                            </div>
                         </div>
                         <div class="card-meta">
                             <span>${job.output_size}&times;${job.output_size} &middot; patch ${job.patch_size}</span>
                             <span>${ts}</span>
                         </div>
+                        ${progressHtml}
                         <div class="images">
                             <div class="img-box"><img src="${job.input_url}" alt="Seed"></div>
                             <span class="arrow">&rarr;</span>
@@ -377,6 +455,44 @@
 
             container.innerHTML = `<div class="grid">${html}</div>`;
         }
+
+        async function cancelJob(id) {
+            if (!confirm('Cancel this pending job?')) return;
+            try {
+                const res = await fetch(`/cancel/${id}`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(err.error || 'Cancel failed');
+                }
+            } catch (err) {
+                alert('Cancel failed: ' + err);
+            } finally {
+                fetchJobs();
+            }
+        }
+
+        async function deleteJob(id) {
+            if (!confirm('Delete this job and its images? This cannot be undone.')) return;
+            try {
+                const res = await fetch(`/jobs/${id}`, { method: 'DELETE' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(err.error || 'Delete failed');
+                }
+            } catch (err) {
+                alert('Delete failed: ' + err);
+            } finally {
+                fetchJobs();
+            }
+        }
+
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('.icon-btn');
+            if (!btn) return;
+            const { action, id } = btn.dataset;
+            if (action === 'cancel') cancelJob(id);
+            else if (action === 'delete') deleteJob(id);
+        });
 
         async function fetchJobs() {
             pulse.classList.add('active');
