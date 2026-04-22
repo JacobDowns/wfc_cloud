@@ -36,6 +36,29 @@ data "google_project" "project" {
 }
 
 # ------------------------------------------------------------------------
+# ENABLE REQUIRED APIS
+# ------------------------------------------------------------------------
+locals {
+  services = [
+    "appengine.googleapis.com",      # To manage App Engine deployments
+    "cloudbuild.googleapis.com",     # Used by App Engine to build the code
+    "run.googleapis.com",            # To manage Cloud Run deployments
+    "firestore.googleapis.com",      # For the database
+    "pubsub.googleapis.com",         # For the message queue
+    "iamcredentials.googleapis.com", # CRITICAL for Workload Identity Federation
+  ]
+}
+
+resource "google_project_service" "enabled_apis" {
+  for_each           = toset(local.services)
+  project            = var.project_id
+  service            = each.key
+  
+  # Prevents Terraform from accidentally disabling these APIs if you run 'destroy'
+  disable_on_destroy = false 
+}
+
+# ------------------------------------------------------------------------
 # 1. STORAGE BUCKETS
 # ------------------------------------------------------------------------
 resource "google_storage_bucket" "wfc_inputs" {
